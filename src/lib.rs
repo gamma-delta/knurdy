@@ -1,6 +1,4 @@
-/*!
-Extremely opinionated crate for an intermediate representation between [`kdl`](https://crates.io/crates/kdl) and serde.
-*/
+#![doc = include_str!("../README.md")]
 
 mod literal;
 mod node;

@@ -3,6 +3,12 @@ name = "knurdy"
 version = "0.1.0"
 edition = "2021"
 
+license = "MIT"
+description = "Minimal, opinionated KDL deserialization with Serde"
+repository = "https://www.github.com/gamma-delta/knurdy"
+keywords = ["serde", "kdl"]
+categories = []
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
