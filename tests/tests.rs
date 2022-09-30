@@ -1,63 +1,5 @@
-use ahash::AHashMap;
-use knurdy::*;
-use serde::{de::IntoDeserializer, Deserialize};
-
-#[test]
-fn knuffel_to_node() {
-    let doc = r#"
-foo "arg1" 2 true k="v" k2="v2" {
-    kiddo1 "hi"
-    kiddo2 (annotation)"hewwo"
-}
-    "#;
-    let nodes: Vec<KdlNode> = knuffel::parse("test", doc).unwrap();
-    assert_eq!(nodes.len(), 1);
-    let node = &nodes[0];
-
-    assert_eq!(
-        node,
-        &KdlNode {
-            name: "foo".into(),
-            arguments: vec![
-                KdlAnnotatedLiteral::new(None, KdlLiteral::String("arg1".into())),
-                KdlAnnotatedLiteral::new(None, KdlLiteral::Int(2)),
-                KdlAnnotatedLiteral::new(None, KdlLiteral::Bool(true)),
-            ],
-            properties: [
-                (
-                    "k".into(),
-                    KdlAnnotatedLiteral::new(None, KdlLiteral::String("v".into()))
-                ),
-                (
-                    "k2".into(),
-                    KdlAnnotatedLiteral::new(None, KdlLiteral::String("v2".into()))
-                ),
-            ]
-            .into_iter()
-            .collect(),
-            children: Some(vec![
-                KdlNode {
-                    name: "kiddo1".into(),
-                    arguments: vec![KdlAnnotatedLiteral::new(
-                        None,
-                        KdlLiteral::String("hi".into())
-                    )],
-                    properties: AHashMap::default(),
-                    children: None,
-                },
-                KdlNode {
-                    name: "kiddo2".into(),
-                    arguments: vec![KdlAnnotatedLiteral::new(
-                        Some("annotation".into()),
-                        KdlLiteral::String("hewwo".into())
-                    )],
-                    properties: AHashMap::default(),
-                    children: None,
-                }
-            ])
-        }
-    )
-}
+use kdl::KdlDocument;
+use serde::Deserialize;
 
 #[test]
 fn to_serde() {
@@ -82,10 +24,11 @@ fn to_serde() {
     node-name an-enum=(Variant2)"hello, world"
     "#;
 
-    let nodes: Vec<KdlNode> = knuffel::parse("test", doc).unwrap();
-    let targets = nodes
+    let node: KdlDocument = doc.parse().unwrap();
+    let targets = node
+        .nodes()
         .iter()
-        .map(|node| Target::deserialize(node.into_deserializer()))
+        .map(|node| knurdy::deserialize_node::<Target>(node))
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     assert_eq!(

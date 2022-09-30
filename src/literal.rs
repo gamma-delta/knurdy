@@ -1,7 +1,8 @@
-use crate::{DeError, KdlAnnotatedLiteral, KdlLiteral};
+use crate::{DeError, KdlAnnotatedValueWrap};
 
 use std::convert::TryInto;
 
+use kdl::{KdlEntry, KdlValue};
 use serde::de::{self, Error, IntoDeserializer, Unexpected, Visitor};
 
 macro_rules! passthru_to_literal {
@@ -11,7 +12,7 @@ macro_rules! passthru_to_literal {
             where
                 V: Visitor<'de>,
             {
-                KdlLiteralDeser(self.literal).[< deserialize_ $ty >](visitor)
+                KdlLiteralDeser(self.0.value).[< deserialize_ $ty >](visitor)
             }
         }
     };
@@ -29,11 +30,11 @@ macro_rules! deser_int_literal {
                 V: Visitor<'de>,
             {
                 match self.0 {
-                    KdlLiteral::Int(it) => {
+                    KdlValue::Base2(it) | KdlValue::Base8(it) | KdlValue::Base10(it) | KdlValue::Base16(it) => {
                         let squished: $ty = (*it).try_into()?;
                         visitor.[< visit_ $ty >](squished)
                     }
-                    oh_no => Err(DeError::invalid_type(oh_no.unexpected(), &visitor)),
+                    oh_no => Err(DeError::invalid_type(unexpected_val(oh_no), &visitor)),
                 }
             }
         }
@@ -45,43 +46,54 @@ macro_rules! deser_int_literal {
     };
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct KdlAnnotatedLiteralDeser<'de> {
-    annotation: Option<&'de str>,
-    literal: &'de KdlLiteral,
+fn unexpected_val(val: &KdlValue) -> Unexpected<'_> {
+    match val {
+        KdlValue::String(s) | KdlValue::RawString(s) => Unexpected::Str(s),
+        KdlValue::Base2(it) | KdlValue::Base8(it) | KdlValue::Base10(it) | KdlValue::Base16(it) => {
+            Unexpected::Signed(*it)
+        }
+        KdlValue::Base10Float(f) => Unexpected::Float(*f),
+        KdlValue::Bool(b) => Unexpected::Bool(*b),
+        KdlValue::Null => Unexpected::Unit,
+    }
 }
 
-impl<'de> KdlAnnotatedLiteralDeser<'de> {
-    pub(crate) fn new(wrapped: &'de KdlAnnotatedLiteral) -> Self {
-        Self {
-            annotation: wrapped.annotation.as_ref().map(|s| s.as_str()),
-            literal: &wrapped.literal,
-        }
+/// Deserializer for a value (property or argument) with a possible annotation.
+///
+/// This is mostly used internally.
+#[derive(Debug, Clone, Copy)]
+pub struct KdlAnnotatedValueDeser<'de>(pub(crate) KdlAnnotatedValueWrap<'de>);
+
+impl<'de> KdlAnnotatedValueDeser<'de> {
+    pub fn new(entry: &'de KdlEntry) -> Self {
+        Self(KdlAnnotatedValueWrap::from_entry(&entry))
     }
 
     fn annotation_is(&self, s: &str) -> bool {
-        match self.annotation {
+        match self.0.annotation {
             Some(it) => it == s,
             None => false,
         }
     }
 }
 
-struct KdlLiteralDeser<'de>(&'de KdlLiteral);
+struct KdlLiteralDeser<'de>(&'de KdlValue);
 
-impl<'de> de::Deserializer<'de> for KdlAnnotatedLiteralDeser<'de> {
+impl<'de> de::Deserializer<'de> for KdlAnnotatedValueDeser<'de> {
     type Error = DeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        match self.literal {
-            KdlLiteral::String(_) => self.deserialize_str(visitor),
-            KdlLiteral::Int(_) => self.deserialize_i64(visitor),
-            KdlLiteral::Float(_) => self.deserialize_f64(visitor),
-            KdlLiteral::Bool(_) => self.deserialize_bool(visitor),
-            KdlLiteral::Null => self.deserialize_unit(visitor),
+        match self.0.value {
+            KdlValue::String(_) | KdlValue::RawString(_) => self.deserialize_str(visitor),
+            KdlValue::Base2(_) | KdlValue::Base8(_) | KdlValue::Base10(_) | KdlValue::Base16(_) => {
+                self.deserialize_i64(visitor)
+            }
+            KdlValue::Base10Float(_) => self.deserialize_f64(visitor),
+            KdlValue::Bool(_) => self.deserialize_bool(visitor),
+            KdlValue::Null => self.deserialize_unit(visitor),
         }
     }
 
@@ -94,11 +106,13 @@ impl<'de> de::Deserializer<'de> for KdlAnnotatedLiteralDeser<'de> {
     where
         V: Visitor<'de>,
     {
-        match self.literal {
-            KdlLiteral::String(s) if self.annotation_is("byte") => match s.as_bytes() {
-                [b] => visitor.visit_u8(*b),
-                _ => Err(DeError::ByteAnnotationLen),
-            },
+        match self.0.value {
+            KdlValue::String(s) | KdlValue::RawString(s) if self.annotation_is("byte") => {
+                match s.as_bytes() {
+                    [b] => visitor.visit_u8(*b),
+                    _ => Err(DeError::ByteAnnotationLen),
+                }
+            }
             other => KdlLiteralDeser(other).deserialize_u8(visitor),
         }
     }
@@ -106,8 +120,8 @@ impl<'de> de::Deserializer<'de> for KdlAnnotatedLiteralDeser<'de> {
     where
         V: Visitor<'de>,
     {
-        match self.literal {
-            KdlLiteral::String(s) if self.annotation_is("char") => {
+        match self.0.value {
+            KdlValue::String(s) | KdlValue::RawString(s) if self.annotation_is("char") => {
                 let mut chars = s.chars();
                 let ch0 = chars.next();
                 let ch1 = chars.next();
@@ -124,8 +138,8 @@ impl<'de> de::Deserializer<'de> for KdlAnnotatedLiteralDeser<'de> {
     where
         V: Visitor<'de>,
     {
-        match &self.literal {
-            KdlLiteral::String(s) => {
+        match &self.0.value {
+            KdlValue::String(s) | KdlValue::RawString(s) => {
                 if self.annotation_is("base64") {
                     let b64 = base64::decode(s.as_str())?;
                     visitor.visit_byte_buf(b64)
@@ -133,7 +147,7 @@ impl<'de> de::Deserializer<'de> for KdlAnnotatedLiteralDeser<'de> {
                     visitor.visit_bytes(s.as_bytes())
                 }
             }
-            oh_no => Err(DeError::invalid_type(oh_no.unexpected(), &visitor)),
+            oh_no => Err(DeError::invalid_type(unexpected_val(oh_no), &visitor)),
         }
     }
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -147,8 +161,8 @@ impl<'de> de::Deserializer<'de> for KdlAnnotatedLiteralDeser<'de> {
     where
         V: Visitor<'de>,
     {
-        match &self.literal {
-            KdlLiteral::Null => visitor.visit_none(),
+        match &self.0.value {
+            KdlValue::Null => visitor.visit_none(),
             _ => visitor.visit_some(self),
         }
     }
@@ -164,13 +178,11 @@ impl<'de> de::Deserializer<'de> for KdlAnnotatedLiteralDeser<'de> {
     where
         V: Visitor<'de>,
     {
-        let (variant, value) = match self.annotation {
+        let (variant, value) = match (self.0.annotation, &self.0.value) {
             // Unit variant
-            None => match &self.literal {
-                KdlLiteral::String(s) => (s.as_str(), None),
-                ohno => return Err(DeError::invalid_type(ohno.unexpected(), &visitor)),
-            },
-            Some(ann) => (ann, Some(self.literal)),
+            (None, KdlValue::String(s) | KdlValue::RawString(s)) => (s.as_str(), None),
+            (None, oh_no) => return Err(DeError::invalid_type(unexpected_val(*oh_no), &visitor)),
+            (Some(ann), v) => (ann, Some(*v)),
         };
         visitor.visit_enum(EnumLiteralDeserializer { variant, value })
     }
@@ -234,11 +246,13 @@ impl<'de> de::Deserializer<'de> for KdlLiteralDeser<'de> {
         V: de::Visitor<'de>,
     {
         match self.0 {
-            KdlLiteral::String(_) => self.deserialize_str(visitor),
-            KdlLiteral::Int(_) => self.deserialize_i64(visitor),
-            KdlLiteral::Float(_) => self.deserialize_f64(visitor),
-            KdlLiteral::Bool(_) => self.deserialize_bool(visitor),
-            KdlLiteral::Null => self.deserialize_unit(visitor),
+            KdlValue::String(_) | KdlValue::RawString(_) => self.deserialize_str(visitor),
+            KdlValue::Base2(_) | KdlValue::Base8(_) | KdlValue::Base10(_) | KdlValue::Base16(_) => {
+                self.deserialize_i64(visitor)
+            }
+            KdlValue::Base10Float(_) => self.deserialize_f64(visitor),
+            KdlValue::Bool(_) => self.deserialize_bool(visitor),
+            KdlValue::Null => self.deserialize_unit(visitor),
         }
     }
 
@@ -250,12 +264,15 @@ impl<'de> de::Deserializer<'de> for KdlLiteralDeser<'de> {
         V: Visitor<'de>,
     {
         match self.0 {
-            KdlLiteral::Int(it) => {
+            KdlValue::Base2(it)
+            | KdlValue::Base8(it)
+            | KdlValue::Base10(it)
+            | KdlValue::Base16(it) => {
                 let squished: u32 = (*it).try_into()?;
                 let squished_again: char = squished.try_into()?;
                 visitor.visit_char(squished_again)
             }
-            oh_no => Err(DeError::invalid_type(oh_no.unexpected(), &visitor)),
+            oh_no => Err(DeError::invalid_type(unexpected_val(oh_no), &visitor)),
         }
     }
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -263,11 +280,11 @@ impl<'de> de::Deserializer<'de> for KdlLiteralDeser<'de> {
         V: Visitor<'de>,
     {
         match self.0 {
-            KdlLiteral::Float(f) => {
+            KdlValue::Base10Float(f) => {
                 // For some reason there doesn't seem to be Into or TryInto impls for f64 => f32?
                 visitor.visit_f32(*f as f32)
             }
-            oh_no => Err(DeError::invalid_type(oh_no.unexpected(), &visitor)),
+            oh_no => Err(DeError::invalid_type(unexpected_val(oh_no), &visitor)),
         }
     }
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -275,8 +292,8 @@ impl<'de> de::Deserializer<'de> for KdlLiteralDeser<'de> {
         V: Visitor<'de>,
     {
         match self.0 {
-            KdlLiteral::Float(f) => visitor.visit_f64(*f),
-            oh_no => Err(DeError::invalid_type(oh_no.unexpected(), &visitor)),
+            KdlValue::Base10Float(f) => visitor.visit_f64(*f),
+            oh_no => Err(DeError::invalid_type(unexpected_val(oh_no), &visitor)),
         }
     }
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -284,8 +301,8 @@ impl<'de> de::Deserializer<'de> for KdlLiteralDeser<'de> {
         V: Visitor<'de>,
     {
         match self.0 {
-            KdlLiteral::Bool(b) => visitor.visit_bool(*b),
-            oh_no => Err(DeError::invalid_type(oh_no.unexpected(), &visitor)),
+            KdlValue::Bool(b) => visitor.visit_bool(*b),
+            oh_no => Err(DeError::invalid_type(unexpected_val(oh_no), &visitor)),
         }
     }
 
@@ -296,8 +313,8 @@ impl<'de> de::Deserializer<'de> for KdlLiteralDeser<'de> {
         V: Visitor<'de>,
     {
         match self.0 {
-            KdlLiteral::String(s) => visitor.visit_str(s.as_str()),
-            oh_no => Err(DeError::invalid_type(oh_no.unexpected(), &visitor)),
+            KdlValue::String(s) | KdlValue::RawString(s) => visitor.visit_str(s.as_str()),
+            oh_no => Err(DeError::invalid_type(unexpected_val(oh_no), &visitor)),
         }
     }
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -312,8 +329,8 @@ impl<'de> de::Deserializer<'de> for KdlLiteralDeser<'de> {
         V: Visitor<'de>,
     {
         match self.0 {
-            KdlLiteral::String(s) => visitor.visit_bytes(s.as_bytes()),
-            oh_no => Err(DeError::invalid_type(oh_no.unexpected(), &visitor)),
+            KdlValue::String(s) | KdlValue::RawString(s) => visitor.visit_bytes(s.as_bytes()),
+            oh_no => Err(DeError::invalid_type(unexpected_val(oh_no), &visitor)),
         }
     }
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -336,8 +353,8 @@ impl<'de> de::Deserializer<'de> for KdlLiteralDeser<'de> {
         V: Visitor<'de>,
     {
         match self.0 {
-            KdlLiteral::Null => visitor.visit_unit(),
-            oh_no => Err(DeError::invalid_type(oh_no.unexpected(), &visitor)),
+            KdlValue::Null => visitor.visit_unit(),
+            oh_no => Err(DeError::invalid_type(unexpected_val(oh_no), &visitor)),
         }
     }
     fn deserialize_unit_struct<V>(
@@ -368,7 +385,7 @@ impl<'de> de::Deserializer<'de> for KdlLiteralDeser<'de> {
         V: Visitor<'de>,
     {
         match self.0 {
-            KdlLiteral::Null => visitor.visit_none(),
+            KdlValue::Null => visitor.visit_none(),
             _ => visitor.visit_some(self),
         }
     }
@@ -392,7 +409,7 @@ impl<'de> de::Deserializer<'de> for KdlLiteralDeser<'de> {
     where
         V: Visitor<'de>,
     {
-        Err(DeError::invalid_type(self.0.unexpected(), &visitor))
+        Err(DeError::invalid_type(unexpected_val(self.0), &visitor))
     }
     fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -443,7 +460,7 @@ impl<'de> de::Deserializer<'de> for KdlLiteralDeser<'de> {
 /// Deserializes either `"variant"` into a unit enum, or `(variant)"value"` into a newtype enum (in an argument/property context)
 struct EnumLiteralDeserializer<'a> {
     variant: &'a str,
-    value: Option<&'a KdlLiteral>,
+    value: Option<&'a KdlValue>,
 }
 
 impl<'de> de::EnumAccess<'de> for EnumLiteralDeserializer<'de> {
@@ -467,7 +484,7 @@ impl<'de> de::VariantAccess<'de> for EnumLiteralDeserializer<'de> {
             None => Ok(()),
             // this means we went `(variant)"some extant data"`
             Some(value) => Err(DeError::invalid_type(
-                value.unexpected(),
+                unexpected_val(value),
                 &"unannotated string",
             )),
         }
