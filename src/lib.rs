@@ -21,7 +21,7 @@ pub fn deserialize_node<'de, T: Deserialize<'de>>(kdl: &'de KdlNode) -> Result<T
     T::deserialize(deserializer)
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum DeError {
     #[error("the deserialize impl on the type reported an error: {0}")]
     VisitorError(String),
