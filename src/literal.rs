@@ -5,45 +5,46 @@ use std::convert::TryInto;
 use kdl::{KdlEntry, KdlValue};
 use serde::de::{self, Error, IntoDeserializer, Unexpected, Visitor};
 
-macro_rules! passthru_to_literal {
-    (@ $ty:ident) => {
-        paste::paste! {
-            fn [< deserialize_ $ty >]<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-            where
-                V: Visitor<'de>,
-            {
-                KdlLiteralDeser(self.0.value).[< deserialize_ $ty >](visitor)
-            }
-        }
-    };
-    ( $($ty:ident)* ) => {
-        $(
-            passthru_to_literal!(@ $ty);
-        )*
-    };
+/// Use KdlLiteralDeser and ignore the annotation data
+macro_rules! ignore_annotation_to_literal {
+  (@ $ty:ident) => {
+    paste::paste! {
+      fn [< deserialize_ $ty >]<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+      where
+        V: Visitor<'de>,
+      {
+        KdlLiteralDeser(self.0.value).[< deserialize_ $ty >](visitor)
+      }
+    }
+  };
+  ( $($ty:ident)* ) => {
+    $(
+      ignore_annotation_to_literal!(@ $ty);
+    )*
+  };
 }
 macro_rules! deser_int_literal {
-    (@ $ty:ty) => {
-        paste::paste! {
-            fn [< deserialize_ $ty >]<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-            where
-                V: Visitor<'de>,
-            {
-                match self.0 {
-                    KdlValue::Base2(it) | KdlValue::Base8(it) | KdlValue::Base10(it) | KdlValue::Base16(it) => {
-                        let squished: $ty = (*it).try_into()?;
-                        visitor.[< visit_ $ty >](squished)
-                    }
-                    oh_no => Err(DeError::invalid_type(unexpected_val(oh_no), &visitor)),
-                }
-            }
+  (@ $ty:ty) => {
+    paste::paste! {
+      fn [< deserialize_ $ty >]<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+      where
+        V: Visitor<'de>,
+      {
+        match self.0 {
+          KdlValue::Base2(it) | KdlValue::Base8(it) | KdlValue::Base10(it) | KdlValue::Base16(it) => {
+            let squished: $ty = (*it).try_into()?;
+            visitor.[< visit_ $ty >](squished)
+          }
+          oh_no => Err(DeError::invalid_type(unexpected_val(oh_no), &visitor)),
         }
-    };
-    ( $($ty:ty)* ) => {
-        $(
-            deser_int_literal!(@ $ty);
-        )*
-    };
+      }
+    }
+  };
+  ( $($ty:ty)* ) => {
+    $(
+      deser_int_literal!(@ $ty);
+    )*
+  };
 }
 
 fn unexpected_val(val: &KdlValue) -> Unexpected<'_> {
@@ -101,45 +102,9 @@ impl<'de> de::Deserializer<'de> for KdlAnnotatedValueDeser<'de> {
     }
   }
 
-  passthru_to_literal! {
-      u16 u32 u64 u128 i8 i16 i32 i64 i128 f32 f64 bool
-      str string identifier unit seq map ignored_any
-  }
-
-  fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-  where
-    V: Visitor<'de>,
-  {
-    match self.0.value {
-      KdlValue::String(s) | KdlValue::RawString(s)
-        if self.annotation_is("byte") =>
-      {
-        match s.as_bytes() {
-          [b] => visitor.visit_u8(*b),
-          _ => Err(DeError::ByteAnnotationLen),
-        }
-      }
-      other => KdlLiteralDeser(other).deserialize_u8(visitor),
-    }
-  }
-  fn deserialize_char<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-  where
-    V: Visitor<'de>,
-  {
-    match self.0.value {
-      KdlValue::String(s) | KdlValue::RawString(s)
-        if self.annotation_is("char") =>
-      {
-        let mut chars = s.chars();
-        let ch0 = chars.next();
-        let ch1 = chars.next();
-        match (ch0, ch1) {
-          (Some(ch0), None) => visitor.visit_char(ch0),
-          _ => Err(DeError::CharAnnotationLen),
-        }
-      }
-      other => KdlLiteralDeser(other).deserialize_u8(visitor),
-    }
+  ignore_annotation_to_literal! {
+      u8 u16 u32 u64 u128 i8 i16 i32 i64 i128 f32 f64 bool
+      char str string identifier unit seq map ignored_any
   }
 
   fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -276,13 +241,41 @@ impl<'de> de::Deserializer<'de> for KdlLiteralDeser<'de> {
   }
 
   deser_int_literal! {
-      u8 u16 u32 u64 u128 i8 i16 i32 i64 i128
+      u16 u32 u64 u128 i8 i16 i32 i64 i128
+  }
+  fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+  where
+    V: Visitor<'de>,
+  {
+    match self.0 {
+      KdlValue::String(s) | KdlValue::RawString(s) => match s.as_bytes() {
+        [b] => visitor.visit_u8(*b),
+        _ => Err(DeError::ByteAnnotationLen),
+      },
+      KdlValue::Base2(it)
+      | KdlValue::Base8(it)
+      | KdlValue::Base10(it)
+      | KdlValue::Base16(it) => {
+        let squished: u8 = (*it).try_into()?;
+        visitor.visit_u8(squished)
+      }
+      oh_no => Err(DeError::invalid_type(unexpected_val(oh_no), &visitor)),
+    }
   }
   fn deserialize_char<V>(self, visitor: V) -> Result<V::Value, Self::Error>
   where
     V: Visitor<'de>,
   {
     match self.0 {
+      KdlValue::String(s) | KdlValue::RawString(s) => {
+        let mut chars = s.chars();
+        let ch0 = chars.next();
+        let ch1 = chars.next();
+        match (ch0, ch1) {
+          (Some(ch0), None) => visitor.visit_char(ch0),
+          _ => Err(DeError::CharAnnotationLen),
+        }
+      }
       KdlValue::Base2(it)
       | KdlValue::Base8(it)
       | KdlValue::Base10(it)

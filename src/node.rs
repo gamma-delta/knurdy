@@ -48,43 +48,43 @@ impl<'de> KdlNodeDeser<'de> {
 }
 
 macro_rules! single_scalar {
-    (@ $ty:ident) => {
-        paste::paste! {
-            fn [< deserialize_ $ty >]<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-            where
-                V: de::Visitor<'de>,
-            {
-                if let ([ref entry @ KdlEntry { .. }], true) = (self.entries, self.children.is_none()) {
-                    if entry.name().is_none() {
-                        // then it is actually an arg, not a prop
-                        return KdlAnnotatedValueDeser::new(entry).[< deserialize_ $ty >](visitor);
-                    }
-                }
-
-                Err(DeError::invalid_type(
-                    Unexpected::Other(concat!(
-                        "node that isn't exactly one argument deserializable as ",
-                        stringify!($ty),
-                        " and nothing else",
-                    )),
-                    &visitor,
-                ))
-            }
+  (@ $ty:ident) => {
+    paste::paste! {
+      fn [< deserialize_ $ty >]<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+      where
+        V: de::Visitor<'de>,
+      {
+        if let ([ref entry @ KdlEntry { .. }], true) = (self.entries, self.children.is_none()) {
+          if entry.name().is_none() {
+            // then it is actually an arg, not a prop
+            return KdlAnnotatedValueDeser::new(entry).[< deserialize_ $ty >](visitor);
+          }
         }
-    };
-    ( $($ty:ident)* ) => {
-        $(
-            single_scalar!(@ $ty);
-        )*
-    };
+
+        Err(DeError::invalid_type(
+          Unexpected::Other(concat!(
+            "node that isn't exactly one argument deserializable as ",
+            stringify!($ty),
+            " and nothing else",
+          )),
+          &visitor,
+        ))
+      }
+    }
+  };
+  ( $($ty:ident)* ) => {
+    $(
+      single_scalar!(@ $ty);
+    )*
+  };
 }
 
 impl<'de> de::Deserializer<'de> for KdlNodeDeser<'de> {
   type Error = DeError;
 
   single_scalar! {
-      u8 u16 u32 u64 i8 i16 i32 i64 char bool f32 f64
-      str string bytes byte_buf identifier
+    u8 u16 u32 u64 i8 i16 i32 i64 char bool f32 f64
+    str string bytes byte_buf identifier
   }
 
   fn deserialize_enum<V>(
@@ -215,6 +215,18 @@ impl<'de> de::Deserializer<'de> for KdlNodeDeser<'de> {
       visitor.visit_seq(SeqArgsDeser(args))
     }
   }
+
+  fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+  where
+    V: de::Visitor<'de>,
+  {
+    if self.entries.len() == 1 && self.entries[0].value().is_null() {
+      visitor.visit_none()
+    } else {
+      visitor.visit_some(self)
+    }
+  }
+
   fn deserialize_tuple<V>(
     self,
     _len: usize,
@@ -273,12 +285,6 @@ impl<'de> de::Deserializer<'de> for KdlNodeDeser<'de> {
     visitor.visit_unit()
   }
 
-  fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-  where
-    V: de::Visitor<'de>,
-  {
-    visitor.visit_some(self)
-  }
   fn deserialize_newtype_struct<V>(
     self,
     _name: &'static str,

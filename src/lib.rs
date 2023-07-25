@@ -41,9 +41,9 @@ pub enum DeError {
   #[error("could not decode base64: {0}")]
   Base64Error(#[from] base64::DecodeError),
 
-  #[error("a string annotated with (byte) must be 1 byte long to be interpreted as a u8")]
+  #[error("a string must be 1 byte long to be interpreted as a u8")]
   ByteAnnotationLen,
-  #[error("a string annotated with (char) must be 1 char long to be interpreted as a char")]
+  #[error("a string must be 1 char long to be interpreted as a char")]
   CharAnnotationLen,
 
   #[error("{0}")]
@@ -65,6 +65,7 @@ impl From<Infallible> for DeError {
   }
 }
 
+/// Potentially with an annotated value
 #[derive(Debug, Clone, Copy)]
 struct KdlAnnotatedValueWrap<'de> {
   annotation: Option<&'de str>,
