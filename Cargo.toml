@@ -5,7 +5,7 @@ edition = "2021"
 
 license = "MIT"
 description = "Minimal, opinionated KDL deserialization with Serde"
-repository = "https://www.github.com/gamma-delta/knurdy"
+repository = "https://github.com/gamma-delta/knurdy"
 keywords = ["serde", "kdl"]
 categories = []
 
